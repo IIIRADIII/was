@@ -56,6 +56,45 @@ WebSphere manage classes
 Application - using for managing application.
 '''
 
+class Cluster:
+    def __init__(self, name):
+        self.name = name
+        self.object = AdminControl.completeObjectName('type=Cluster,name=' + self.name + ',*')
+        self.id = AdminConfig.getid('/ServerCluster:' + self.name)
+        self.members = AdminConfig.list('ClusterMember', self.id).split(lineSeparator)
+
+    def status(self):
+        state = AdminControl.getAttribute(self.object,"state")
+        if state == "websphere.cluster.running":
+            return "started"
+        elif state == "websphere.cluster.stopped":
+            return "stopped"
+
+    def stop(self):
+        if self.status() == "stopped":
+            print "Cluster " + self.name + " already stopped"
+        else:
+            AdminControl.invoke(self.object, 'stop')
+            while self.status() != "stopped":
+                print "Waiting till cluster stops. Sleep for 5 seconds"
+                time.sleep(5)
+            print "Cluster " + self.name + " successfully stopped"
+
+    def start(self):
+        if self.status() == "started":
+            print "Cluster " + self.name + " already started"
+        else:
+            AdminControl.invoke(self.object, 'start')
+            while self.status() != "started":
+                print "Waiting till cluster starts. Sleep for 5 seconds"
+                time.sleep(5)
+            print "Cluster " + self.name + " successfully started"
+
+    def restart(self):
+        print "Trying to restart cluster"
+        self.stop()
+        self.start()
+        print "Cluster successfully restarted"
 
 class Application:
     def __init__(self, name):
@@ -77,12 +116,10 @@ class Application:
                 par, value = cur.split('=')
                 modparams[par] = value
             if modparams.has_key('cluster'):
-                clustername = modparams['cluster']
-                clusterobject = AdminControl.completeObjectName('type=Cluster,name=' + clustername + ',*')
-                self.cluster['name'] = clustername
-                self.cluster['object'] = clusterobject
-                clusterId = AdminConfig.getid('/ServerCluster:' + modparams['cluster'])
-                clusterMembers = AdminConfig.list('ClusterMember', clusterId).split('\n')
+                cluster = Cluster(modparams['cluster'])
+                self.cluster['name'] = cluster.name
+                self.cluster['object'] = cluster.object
+                clusterMembers = cluster.members
                 for cm in clusterMembers:
                     serverparams = {}
                     servername = cm[:cm.find('(cell')]
@@ -138,23 +175,39 @@ class Application:
         return AdminApp.isAppReady(self.name)
 
     def stop(self):
-        AdminControl.invoke(self.servers[0]['applicationManager'], 'stopApplication', self.name)
-        while self.status() != "stopped":
-            time.sleep(5)
-            logger.loginfo("Waiting till " + self.name + " application stops")
-        logger.loginfo("Application successfully stopped")
+        if self.status() != "started":
+            print "App " + self.name + "already stopped"
+        else:
+            AdminControl.invoke(self.servers[0]['applicationManager'], 'stopApplication', self.name)
+            while self.status() != "stopped":
+                time.sleep(5)
+                logger.loginfo("Waiting till " + self.name + " application stops")
+            logger.loginfo("Application successfully stopped")
 
     def start(self):
-        AdminControl.invoke(self.servers[0]['applicationManager'], 'startApplication', self.name)
-        while AdminApp.isAppReady(app.name) != "true" and self.status() != "started":
+        if self.status() != "stopped":
+            print "App " + self.name + "already started"
+        else:
+            AdminControl.invoke(self.servers[0]['applicationManager'], 'startApplication', self.name)
+            while AdminApp.isAppReady(app.name) != "true" and self.status() != "started":
+                time.sleep(5)
+                logger.loginfo("Waiting till " + self.name + " application starts")
+            logger.loginfo("Application " + self.name + " started")
+
+    def restart(self):
+        self.stop()
+        while self.isready() != "true":
+            print "Waiting till app " + self.name + " stops"
             time.sleep(5)
-            logger.loginfo("Waiting till " + self.name + " application updates and starts")
-        logger.loginfo("Application " + self.name + " started")
+        self.start()
+        while self.isready() != "false":
+            print "Waiting till app " + self.name + " starts"
+            time.sleep(5)
 
     def update(self, distrpath):
         logger.loginfo("Try to uninstal " + self.name + " application")
         AdminApp.uninstall(self.name)
-        logger.loginfo("App " + self.name + " uninstalled succesfully")
+        logger.loginfo("App " + self.name + " uninstalled successfully")
         logger.loginfo("Try to install " + self.name + " application " + " from path " + distrpath)
         if self.cluster['name'] != "None":
             logger.loginfo("Install to " + self.cluster['name'])
@@ -180,7 +233,7 @@ class Application:
                        "-MapWebModToVH [[.* .* default_host]]" + \
                        "]"
                 AdminApp.install(distrpath, opts)
-        logger.loginfo("App " + self.name + " updated succesfully ")
+        logger.loginfo("App " + self.name + " updated successfully ")
 
     def uninstall(self):
         AdminApp.uninstall(self.name)
@@ -337,7 +390,7 @@ if manageObjectType.lower() == "application":
             while not (app.isready() == "true" or app.status() != "stopped"):
                 time.sleep(5)
                 logger.loginfo("Waiting till application " + app.name + " stops")
-            logger.loginfo(app.name + " succesfully stopped")
+            logger.loginfo(app.name + " successfully stopped")
             logger.loginfo("")
         logger.logseparator()
         logger.loginfo("All applications stopped, now trying to start")
@@ -347,7 +400,7 @@ if manageObjectType.lower() == "application":
             while app.isready() == "false" or app.status() == "stopped":
                 time.sleep(5)
                 logger.loginfo("Waiting till " + app + " starts")
-            logger.loginfo(app.name + " succesfully started")
+            logger.loginfo(app.name + " successfully started")
         save_and_sync()
         logger.logendinfo()
     if whatToDo.lower() == "stop":
@@ -378,6 +431,31 @@ elif manageObjectType.lower() == 'xml':
         endtag = sys.argv[5]
         value = sys.argv[6]
         xml.changevalue(fulltag, starttag, endtag, value)
+
+elif manageObjectType.lower() == 'cluster':
+    clusters = manageObjectNames.split(',')
+    clusterlist = []
+    for name in clusters:
+        clusterlist.append(Cluster(name))
+    print clusterlist
+    if whatToDo.lower() == "stop":
+        logger.logstartinfo("TRYING TO STOP CLUSTER(S)")
+        for cluster in clusterlist:
+            cluster.stop()
+            logger.loginfo("")
+        logger.logendinfo()
+    if whatToDo.lower() == "start":
+        logger.logstartinfo("TRYING TO START CLUSTER(S)")
+        for cluster in clusterlist:
+            cluster.start()
+            logger.loginfo("")
+        logger.logendinfo()
+    if whatToDo.lower() == "restart":
+        logger.logstartinfo("TRYING TO RESTART CLUSTER(S)")
+        for cluster in clusterlist:
+            cluster.restart()
+            logger.loginfo("")
+        logger.logendinfo()
 else:
-    logger.logerror("Can't apply passed arguments to the script!\n"
-                    " Please, set right parameters and try again")
+    logger.logerror("Can't apply passed arguments to script!\n"
+                    "Please, set right parameters and try again")
